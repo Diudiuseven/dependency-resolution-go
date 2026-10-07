@@ -166,7 +166,7 @@ func cmdInstall(args []string) {
 	}
 
 	registry := resolver.NewFileRegistry(*registryDir)
-	lock, err := resolver.ReadLock(*lockPath)
+	lock, err := readLockWithWarnings(*lockPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -215,7 +215,7 @@ func cmdVerify(args []string) {
 	}
 
 	registry := resolver.NewFileRegistry(*registryDir)
-	lock, err := resolver.ReadLock(*lockPath)
+	lock, err := readLockWithWarnings(*lockPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -297,6 +297,18 @@ func (s *stringList) String() string { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// readLockWithWarnings 读取锁定文件，并将旧格式兼容提示输出到 stderr。
+func readLockWithWarnings(path string) (*resolver.Lock, error) {
+	lock, warnings, err := resolver.ReadLockCompat(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "兼容提示: %s\n", w)
+	}
+	return lock, nil
 }
 
 func fatal(err error) {

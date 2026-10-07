@@ -38,30 +38,45 @@ func ExplainConflict(err *ConflictError) string {
 }
 
 // ExplainResolution 生成求解结果的可读说明。
+// 输出是确定性的: 槽位按 (名称, 兼容边界) 排序，不依赖 Resolution 内部的槽位顺序。
+// 对最终未选定版本的槽位（求解过程中探索过但未采用的兼容边界）同样如实呈现，
+// 不会跳过，也不会解引用空指针。
 func ExplainResolution(r *Resolution) string {
 	var b strings.Builder
 	b.WriteString("求解结果:\n")
-	// 按名称分组
+	// 复制并按 (名称, 边界) 排序，保证输出顺序与输入顺序无关
+	slots := make([]*Slot, len(r.Slots))
+	copy(slots, r.Slots)
+	sort.Slice(slots, func(i, j int) bool {
+		if slots[i].Key.Name != slots[j].Key.Name {
+			return slots[i].Key.Name < slots[j].Key.Name
+		}
+		return slots[i].Key.Boundary < slots[j].Key.Boundary
+	})
+	// 按名称分组（已排序，组内边界有序）
 	byName := make(map[string][]*Slot)
 	var names []string
-	for _, slot := range r.Slots {
+	for _, slot := range slots {
 		if _, ok := byName[slot.Key.Name]; !ok {
 			names = append(names, slot.Key.Name)
 		}
 		byName[slot.Key.Name] = append(byName[slot.Key.Name], slot)
 	}
-	sort.Strings(names)
 	for _, name := range names {
-		slots := byName[name]
 		b.WriteString("  ")
 		b.WriteString(name)
 		b.WriteString(":")
-		for i, slot := range slots {
+		for i, slot := range byName[name] {
 			if i > 0 {
 				b.WriteString(",")
 			}
 			b.WriteString(" ")
-			b.WriteString(slot.Selected.String())
+			if slot.Selected == nil {
+				// 未落到具体版本的槽位：如实标注，不跳过
+				b.WriteString("<未选定>")
+			} else {
+				b.WriteString(slot.Selected.String())
+			}
 			b.WriteString(" (boundary=")
 			b.WriteString(slot.Key.Boundary)
 			b.WriteString(")")

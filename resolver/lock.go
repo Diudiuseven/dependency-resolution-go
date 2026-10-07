@@ -7,21 +7,24 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"time"
 )
 
 // LockFormat 是锁定文件的格式标识。
 const LockFormat = "depres-lock/v1"
 
 // Lock 表示一次求解的固化结果。
+// 为保证可复现性，锁定内容不包含任何随运行时刻变化的数据（如时间戳）。
 type Lock struct {
 	Format              string       `json:"format"`
-	ResolvedAt          string       `json:"resolved_at"`
 	RegistryFingerprint string       `json:"registry_fingerprint"`
 	Policy              string       `json:"policy"`
 	Members             []string     `json:"members"`
 	Slots               []LockedSlot `json:"slots"`
 }
+
+// removedLockFields 是历史上存在、本版已移除的锁定文件字段。
+// 读取旧锁定文件时兼容处理（忽略），但会给出可区分的提示。
+var removedLockFields = []string{"resolved_at"}
 
 // LockedSlot 表示锁定的槽位。
 type LockedSlot struct {
@@ -56,37 +59,71 @@ func WriteLock(path string, lock *Lock) error {
 }
 
 // ReadLock 从文件读取锁定结果。
+// 旧版本锁定文件中的已移除字段会被静默忽略；需要兼容提示时请使用 ReadLockCompat。
 func ReadLock(path string) (*Lock, error) {
+	lock, _, err := ReadLockCompat(path)
+	return lock, err
+}
+
+// ReadLockCompat 从文件读取锁定结果，并对旧版本锁定文件中已调整或移除的内容
+// 给出可区分的兼容提示（warnings）。旧锁定文件仍可正常读取、校验和使用。
+func ReadLockCompat(path string) (*Lock, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取锁定文件失败: %v", err)
+		return nil, nil, fmt.Errorf("读取锁定文件失败: %v", err)
 	}
 	var lock Lock
 	if err := json.Unmarshal(data, &lock); err != nil {
-		return nil, fmt.Errorf("解析锁定文件失败: %v", err)
+		return nil, nil, fmt.Errorf("解析锁定文件失败: %v", err)
 	}
 	if lock.Format != LockFormat {
-		return nil, fmt.Errorf("不支持的锁定文件格式: %s", lock.Format)
+		return nil, nil, fmt.Errorf("不支持的锁定文件格式: %s", lock.Format)
 	}
-	return &lock, nil
+	// 检测已移除的字段，给出可区分的兼容提示
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		var warnings []string
+		for _, field := range removedLockFields {
+			if _, ok := raw[field]; ok {
+				warnings = append(warnings, fmt.Sprintf(
+					"锁定文件包含已移除的字段 %q，已兼容忽略（该字段不再写入，不影响校验与使用）", field))
+			}
+		}
+		return &lock, warnings, nil
+	}
+	return &lock, nil, nil
 }
 
 // LockFromResolution 从求解结果生成锁定文件内容。
+// 输出是确定性的: 相同求解结果、registry 与成员列表必产生逐字节一致的锁定内容，
+// 不随运行时刻、机器、进程重启或并发而变化。
 func LockFromResolution(r *Resolution, registry Registry, policy CompatibilityPolicy, members []string) (*Lock, error) {
 	lock := &Lock{
 		Format:              LockFormat,
-		ResolvedAt:          time.Now().UTC().Format(time.RFC3339),
 		RegistryFingerprint: registry.Fingerprint(),
 		Policy:              policy.Name(),
-		Members:             members,
 	}
-	// 排序成员
+	// 排序成员（复制后再排序，避免修改调用方的切片）
+	lock.Members = make([]string, len(members))
+	copy(lock.Members, members)
 	sort.Strings(lock.Members)
 
+	// 复制并按 (名称, 边界) 排序，保证写入顺序与 Resolution 内部槽位顺序无关
+	slots := make([]*Slot, 0, len(r.Slots))
 	for _, slot := range r.Slots {
 		if slot.Selected == nil {
-			continue
+			continue // 未选定版本的槽位不进入锁定结果
 		}
+		slots = append(slots, slot)
+	}
+	sort.Slice(slots, func(i, j int) bool {
+		if slots[i].Key.Name != slots[j].Key.Name {
+			return slots[i].Key.Name < slots[j].Key.Name
+		}
+		return slots[i].Key.Boundary < slots[j].Key.Boundary
+	})
+
+	for _, slot := range slots {
 		ls := LockedSlot{
 			Name:     slot.Key.Name,
 			Boundary: slot.Key.Boundary,
