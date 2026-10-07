@@ -166,10 +166,11 @@ func cmdInstall(args []string) {
 	}
 
 	registry := resolver.NewFileRegistry(*registryDir)
-	lock, err := resolver.ReadLock(*lockPath)
+	lock, notices, err := resolver.ReadLockWithNotices(*lockPath)
 	if err != nil {
 		fatal(err)
 	}
+	printCompatNotices(notices)
 
 	plan, err := resolver.Install(lock, registry, *targetDir)
 	if err != nil {
@@ -215,10 +216,11 @@ func cmdVerify(args []string) {
 	}
 
 	registry := resolver.NewFileRegistry(*registryDir)
-	lock, err := resolver.ReadLock(*lockPath)
+	lock, notices, err := resolver.ReadLockWithNotices(*lockPath)
 	if err != nil {
 		fatal(err)
 	}
+	printCompatNotices(notices)
 
 	var moduleManifests []*resolver.ModuleManifest
 	if workspace != "" {
@@ -302,6 +304,14 @@ func (s *stringList) Set(v string) error {
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 	os.Exit(1)
+}
+
+// printCompatNotices 将读取旧/异构锁定结果时的兼容提示以可区分的形式输出到 stderr，
+// 不影响正常的 stdout 结论与退出码。
+func printCompatNotices(notices []resolver.CompatNotice) {
+	for _, n := range notices {
+		fmt.Fprintf(os.Stderr, "兼容提示[%s]: %s\n", n.Kind, n.Message)
+	}
 }
 
 func handleError(err error) {
